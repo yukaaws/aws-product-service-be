@@ -20,6 +20,19 @@ export class ProductServiceStack extends cdk.Stack {
         ),
       }
     );
+    
+    const getProductsByIdLambda = new lambda.Function(
+      this,
+      'GetProductsByIdLambda',
+      {
+        runtime: lambda.Runtime.NODEJS_18_X,
+        handler: 'getProductsById.getProductsById',
+        code: lambda.Code.fromAsset(
+          path.join(__dirname, '../product-lambda/products')
+        ),
+      }
+    );
+
 
     const api = new apigateway.RestApi(this, 'ProductServiceApi', {
       restApiName: 'Product Service API',
@@ -29,10 +42,19 @@ export class ProductServiceStack extends cdk.Stack {
     const getProductsListLambdaIntegration = new apigateway.LambdaIntegration(getProductsListLambda, {
     });
 
+    const getProductsByIdLambdaIntegration = new apigateway.LambdaIntegration(getProductsByIdLambda, {
+    });
+
     const products = api.root.addResource('products');
     products.addMethod(
       'GET',
        getProductsListLambdaIntegration
+    );
+    const productById = products.addResource('{productId}');
+    
+    productById.addMethod(
+      'GET',
+      getProductsByIdLambdaIntegration
     );
   }
 }

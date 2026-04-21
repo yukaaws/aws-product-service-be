@@ -8,6 +8,9 @@ Api id ibmz2gr304
 BE: 
 https://ibmz2gr304.execute-api.us-west-1.amazonaws.com/prod/products
 
+https://ibmz2gr304.execute-api.us-west-1.amazonaws.com/prod/products/p1
+
+
 
 
 FE:
