@@ -20,7 +20,7 @@ export class ProductServiceStack extends cdk.Stack {
         ),
       }
     );
-    
+
     const getProductsByIdLambda = new lambda.Function(
       this,
       'GetProductsByIdLambda',
@@ -36,7 +36,50 @@ export class ProductServiceStack extends cdk.Stack {
 
     const api = new apigateway.RestApi(this, 'ProductServiceApi', {
       restApiName: 'Product Service API',
-       description: "This API serves the Lambda functions."
+      description: "This API serves the Lambda functions."
+    });
+
+    const productSchema: apigateway.JsonSchema = {
+      type: apigateway.JsonSchemaType.OBJECT,
+      description: 'Product entity returned by Product Service',
+      properties: {
+        id: {
+          type: apigateway.JsonSchemaType.STRING,
+          description: 'Unique product identifier',
+        },
+        title: {
+          type: apigateway.JsonSchemaType.STRING,
+          description: 'Product title',
+        },
+        description: {
+          type: apigateway.JsonSchemaType.STRING,
+          description: 'Product description',
+        },
+        price: {
+          type: apigateway.JsonSchemaType.NUMBER,
+          description: 'Product price',
+        },
+      },
+      required: ['id', 'title', 'price'],
+    };
+
+
+    const productModel = new apigateway.Model(this, 'ProductModel', {
+      restApi: api,
+      contentType: 'application/json',
+      modelName: 'Product',
+      schema: productSchema,
+    });
+
+    const productsModel = new apigateway.Model(this, 'ProductsModel', {
+      restApi: api,
+      contentType: 'application/json',
+      modelName: 'Products',
+      schema: {
+        type: apigateway.JsonSchemaType.ARRAY,
+        description: 'List of available products',
+        items: productSchema,
+      },
     });
 
     const getProductsListLambdaIntegration = new apigateway.LambdaIntegration(getProductsListLambda, {
@@ -48,13 +91,36 @@ export class ProductServiceStack extends cdk.Stack {
     const products = api.root.addResource('products');
     products.addMethod(
       'GET',
-       getProductsListLambdaIntegration
+      getProductsListLambdaIntegration,
+      {
+        methodResponses: [
+          {
+            statusCode: '200',
+            responseModels: {
+              'application/json': productsModel,
+            },
+          },
+        ],
+      }
     );
     const productById = products.addResource('{productId}');
-    
+
     productById.addMethod(
       'GET',
-      getProductsByIdLambdaIntegration
+      getProductsByIdLambdaIntegration,
+      {
+        methodResponses: [
+          {
+            statusCode: '200',
+            responseModels: {
+              'application/json': productModel,
+            },
+          },
+          {
+            statusCode: '404',
+          },
+        ],
+      }
     );
   }
 }
