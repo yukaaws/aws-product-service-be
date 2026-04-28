@@ -4,39 +4,100 @@ import { Construct } from 'constructs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 
 export class ProductServiceStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
-    const getProductsListLambda = new lambda.Function(
+    const productsTable = dynamodb.Table.fromTableName(
+      this,
+      'ProductsTable',
+      'products'
+    );
+
+    const stockTable = dynamodb.Table.fromTableName(
+      this,
+      'StockTable',
+      'stock'
+    );
+
+    const environment = {
+      PRODUCTS_TABLE: productsTable.tableName,
+      STOCK_TABLE: stockTable.tableName,
+    };
+
+    const getProductsListLambda = new NodejsFunction(
       this,
       'GetProductsListLambda',
       {
         runtime: lambda.Runtime.NODEJS_20_X,
-        handler: 'getProductsList.getProductsList', // 'fileName.functionName'
-        code: lambda.Code.fromAsset(
-          path.join(__dirname, '../product-lambda/products')
+        entry: path.join(
+          __dirname,
+          '../product-lambda/products/getProductsList.ts'
         ),
+        handler: 'getProductsList',
+        bundling: {
+          minify: false,
+          sourceMap: true,
+        },
+        environment,
       }
     );
 
-    const getProductsByIdLambda = new lambda.Function(
+    productsTable.grantReadData(getProductsListLambda);
+    stockTable.grantReadData(getProductsListLambda);
+
+    const getProductsByIdLambda = new NodejsFunction(
       this,
       'GetProductsByIdLambda',
       {
         runtime: lambda.Runtime.NODEJS_18_X,
-        handler: 'getProductsById.getProductsById',
-        code: lambda.Code.fromAsset(
-          path.join(__dirname, '../product-lambda/products')
+        entry: path.join(
+          __dirname,
+          '../product-lambda/products/getProductsById.ts'
         ),
+        handler: 'getProductsById', // exported function name
+        bundling: {
+          minify: false,
+          sourceMap: true,
+        },
+        environment,
+      }
+    );
+
+    productsTable.grantReadData(getProductsByIdLambda);
+    stockTable.grantReadData(getProductsByIdLambda);
+
+
+    const createProductLambda = new NodejsFunction(
+      this,
+      'CreateProductLambda',
+      {
+        runtime: lambda.Runtime.NODEJS_18_X,
+        entry: path.join(
+          __dirname,
+          '../product-lambda/products/createProduct.ts'
+        ),
+        handler: 'createProduct',
+        environment,
       }
     );
 
 
+    productsTable.grantWriteData(createProductLambda);
+    stockTable.grantWriteData(createProductLambda);
+
     const api = new apigateway.RestApi(this, 'ProductServiceApi', {
       restApiName: 'Product Service API',
-      description: "This API serves the Lambda functions."
+      description: "This API serves the Lambda functions.",
+      defaultCorsPreflightOptions: {
+        allowOrigins: apigateway.Cors.ALL_ORIGINS,
+        allowMethods: apigateway.Cors.ALL_METHODS,
+        allowHeaders: ['Content-Type'],
+      },
+
     });
 
     const productSchema: apigateway.JsonSchema = {
@@ -83,9 +144,11 @@ export class ProductServiceStack extends cdk.Stack {
     });
 
     const getProductsListLambdaIntegration = new apigateway.LambdaIntegration(getProductsListLambda, {
+      proxy: true,
     });
 
     const getProductsByIdLambdaIntegration = new apigateway.LambdaIntegration(getProductsByIdLambda, {
+      proxy: true,
     });
 
     const products = api.root.addResource('products');
@@ -103,6 +166,14 @@ export class ProductServiceStack extends cdk.Stack {
         ],
       }
     );
+
+    products.addMethod(
+      'POST',
+      new apigateway.LambdaIntegration(createProductLambda, {
+        proxy: true,
+      })
+    );
+
     const productById = products.addResource('{productId}');
 
     productById.addMethod(
