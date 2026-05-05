@@ -66,8 +66,8 @@ export class ImportServiceStack extends cdk.Stack {
 
         /** IAM permissions */
         this.importBucket.grantPut(importProductsFile);
-        this.importBucket.grantRead(importFileParser);
-
+        this.importBucket.grantReadWrite(importFileParser);
+ 
 
         /**
          * S3 → Lambda notification

@@ -1,6 +1,6 @@
 
 import { S3Event } from 'aws-lambda';
-import { S3Client, GetObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, GetObjectCommand, CopyObjectCommand, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import csv from 'csv-parser';
 
 const s3 = new S3Client({});
@@ -26,6 +26,7 @@ export const handler = async (event: S3Event): Promise<void> => {
       return;
     }
 
+    // Parse CSV via stream
     await new Promise<void>((resolve, reject) => {
       (response.Body as NodeJS.ReadableStream)
         .pipe(csv())
@@ -41,5 +42,31 @@ export const handler = async (event: S3Event): Promise<void> => {
           reject(err);
         });
     });
+
+    
+    // Move file to parsed/
+    const parsedKey = key.replace('uploaded/', 'parsed/');
+
+    console.log(`Moving file to ${parsedKey}`);
+
+    await s3.send(
+      new CopyObjectCommand({
+        Bucket: bucket,
+        CopySource: `${bucket}/${key}`,
+        Key: parsedKey,
+      })
+    );
+
+    
+    await s3.send(
+      new DeleteObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      })
+    );
+
+    console.log(`File successfully moved to parsed folder`);
+
+
   }
 };
