@@ -5,7 +5,6 @@ import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
 
 const s3 = new S3Client({ region: process.env.AWS_REGION });
-// const BUCKET_NAME = process.env.IMPORT_BUCKET!;
 
 export const handler = async (event: { queryStringParameters: { name: any; }; }) => {
     try {
