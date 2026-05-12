@@ -8,10 +8,17 @@ import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
 import * as apigateway from 'aws-cdk-lib/aws-apigateway';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+
+
+export interface ImportServiceStackProps extends cdk.StackProps {
+    catalogItemsQueue: sqs.IQueue;
+}
+
 
 export class ImportServiceStack extends cdk.Stack {
     public readonly importBucket: s3.Bucket;
-    constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    constructor(scope: Construct, id: string, props: ImportServiceStackProps) {
         super(scope, id, props);
 
         this.importBucket = new s3.Bucket(this, 'ImportServiceBucket', {
@@ -28,7 +35,6 @@ export class ImportServiceStack extends cdk.Stack {
             ],
         });
 
-
         /**
          * Create "uploaded/" folder (prefix)
          */
@@ -37,9 +43,6 @@ export class ImportServiceStack extends cdk.Stack {
             destinationKeyPrefix: 'uploaded',
             sources: [s3deploy.Source.data('README.md', 'Uploaded files go here')],
         });
-
-
-
 
         /** Lambda */
         const importProductsFile = new NodejsFunction(this, 'ImportProductsFile', {
@@ -51,7 +54,6 @@ export class ImportServiceStack extends cdk.Stack {
             },
         });
 
-
         /**
          * importFileParser Lambda
          */
@@ -61,13 +63,14 @@ export class ImportServiceStack extends cdk.Stack {
             handler: 'handler',
             environment: {
                 IMPORT_BUCKET: this.importBucket.bucketName,
+                SQS_QUEUE_URL: props.catalogItemsQueue.queueUrl,
             },
         });
 
         /** IAM permissions */
         this.importBucket.grantPut(importProductsFile);
         this.importBucket.grantReadWrite(importFileParser);
- 
+        props.catalogItemsQueue.grantSendMessages(importFileParser)
 
         /**
          * S3 → Lambda notification
@@ -79,7 +82,6 @@ export class ImportServiceStack extends cdk.Stack {
             { prefix: 'uploaded/' }
         );
 
-
         /** API Gateway */
         const api = new apigateway.RestApi(this, 'ImportApi', {
             restApiName: 'Import Service',
@@ -88,7 +90,6 @@ export class ImportServiceStack extends cdk.Stack {
                 allowMethods: ['GET'],
             },
         });
-
 
         const importResource = api.root.addResource('import');
         importResource.addMethod(

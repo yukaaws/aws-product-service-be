@@ -6,8 +6,17 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+
 
 export class ProductServiceStack extends cdk.Stack {
+  //  Queue is publicly exposed to other stacks
+  public readonly catalogItemsQueue: sqs.Queue;
+
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -192,6 +201,73 @@ export class ProductServiceStack extends cdk.Stack {
           },
         ],
       }
+    );
+
+    // Create SQS queue
+    this.catalogItemsQueue = new sqs.Queue(this, 'CatalogItemsQueue', {
+      queueName: 'catalogItemsQueue',
+      visibilityTimeout: cdk.Duration.seconds(30),
+    });
+
+    // Create catalogBatchProcess Lambda
+    const catalogBatchProcess = new NodejsFunction(this, 'CatalogBatchProcess', {
+      functionName: 'catalogBatchProcess',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: path.join(
+        __dirname,
+        '../product-lambda/products/catalogBatchProcess.ts'
+      ),
+      handler: 'catalogBatchProcess',
+      environment,
+    });
+
+    // Grant DynamoDB access:
+    // Write permissions (required for TransactWriteItems)
+    productsTable.grantWriteData(catalogBatchProcess);
+    stockTable.grantWriteData(catalogBatchProcess);
+
+    // Read/Query permissions for GSI (indexes have separate ARNs)
+    catalogBatchProcess.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dynamodb:Query',
+        ],
+        resources: [
+          'arn:aws:dynamodb:us-west-1:332241527431:table/products',
+          'arn:aws:dynamodb:us-west-1:332241527431:table/products/index/*',
+        ],
+      })
+    );
+
+    // Connect SQS to Lambda
+    catalogBatchProcess.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.catalogItemsQueue, {
+        batchSize: 5,
+      })
+    );
+
+    new cdk.CfnOutput(this, 'CatalogItemsQueueUrl', {
+      value: this.catalogItemsQueue.queueUrl,
+    });
+
+
+    const createProductTopic = new sns.Topic(this, 'CreateProductTopic', {
+      topicName: 'createProductTopic',
+    });
+
+
+    createProductTopic.addSubscription(
+      // You must confirm the email when AWS sends confirmation
+      new subscriptions.EmailSubscription('yuka.github@gmail.com')
+    );
+    createProductTopic.grantPublish(catalogBatchProcess);
+    this.catalogItemsQueue.grantConsumeMessages(catalogBatchProcess);
+
+    // Pass topic ARN to Lambda as env variable
+    catalogBatchProcess.addEnvironment(
+      'CREATE_PRODUCT_TOPIC_ARN',
+      createProductTopic.topicArn
     );
   }
 }
