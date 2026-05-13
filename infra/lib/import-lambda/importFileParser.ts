@@ -31,8 +31,8 @@ export const handler = async (event: S3Event): Promise<void> => {
     console.log(`Processing file s3://${bucket}/${key}`);
 
     const command = new GetObjectCommand({
-        Bucket: bucket,
-        Key: key,
+      Bucket: bucket,
+      Key: key,
     });
 
     const response = await s3.send(command);
@@ -44,25 +44,33 @@ export const handler = async (event: S3Event): Promise<void> => {
     // Parse CSV and send messages to SQS
     await new Promise<void>((resolve, reject) => {
       const stream = response.Body as NodeJS.ReadableStream;
-
+      const sendPromises: Promise<any>[] = [];
       stream
         .pipe(csv())
-        .on('data', async (record) => {
-          try {
-            console.log(`Sending message to SQS ${JSON.stringify(record)} to url  : ${SQS_QUEUE_URL}`, );
-            await sqs.send(
-              new SendMessageCommand({
-                QueueUrl: SQS_QUEUE_URL,
-                MessageBody: JSON.stringify(record),
-              })
-            );
-            console.log('messsage sent to SQS')
-          } catch (err) {
-            console.error('Failed to send message to SQS', err);
-            reject(err);
-          }
+        .on('data', (record) => {
+
+          console.log(`Sending message to SQS ${JSON.stringify(record)} to url  : ${SQS_QUEUE_URL}`,);
+          const sendPromise = sqs.send(
+            new SendMessageCommand({
+              QueueUrl: SQS_QUEUE_URL,
+              MessageBody: JSON.stringify(record),
+            })
+          );
+          sendPromises.push(sendPromise);
         })
-        .on('end', resolve)
+        .on('end',
+          async () => {
+            try {
+              // WAIT for ALL sends
+              await Promise.all(sendPromises);
+
+              console.log(`All messages sent to SQS: ${sendPromises.length}`);
+              resolve();
+            } catch (err) {
+              reject(err);
+            }
+          }
+        )
         .on('error', reject);
     });
 

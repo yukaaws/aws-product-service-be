@@ -37,6 +37,10 @@ export class ProductServiceStack extends cdk.Stack {
       STOCK_TABLE: stockTable.tableName,
     };
 
+    const createProductTopic = new sns.Topic(this, 'CreateProductTopic', {
+      topicName: 'createProductTopic',
+    });
+
     const getProductsListLambda = new NodejsFunction(
       this,
       'GetProductsListLambda',
@@ -47,6 +51,8 @@ export class ProductServiceStack extends cdk.Stack {
           '../product-lambda/products/getProductsList.ts'
         ),
         handler: 'getProductsList',
+        // less then SQS
+        timeout: cdk.Duration.seconds(30),
         bundling: {
           minify: false,
           sourceMap: true,
@@ -206,7 +212,8 @@ export class ProductServiceStack extends cdk.Stack {
     // Create SQS queue
     this.catalogItemsQueue = new sqs.Queue(this, 'CatalogItemsQueue', {
       queueName: 'catalogItemsQueue',
-      visibilityTimeout: cdk.Duration.seconds(30),
+      // MUST be greater than Lambda timeout
+      visibilityTimeout: cdk.Duration.seconds(60),
     });
 
     // Create catalogBatchProcess Lambda
@@ -218,7 +225,12 @@ export class ProductServiceStack extends cdk.Stack {
         '../product-lambda/products/catalogBatchProcess.ts'
       ),
       handler: 'catalogBatchProcess',
-      environment,
+
+      environment: {
+        ...environment,
+        CREATE_PRODUCT_TOPIC_ARN: createProductTopic.topicArn,
+      },
+
     });
 
     // Grant DynamoDB access:
@@ -244,6 +256,7 @@ export class ProductServiceStack extends cdk.Stack {
     catalogBatchProcess.addEventSource(
       new lambdaEventSources.SqsEventSource(this.catalogItemsQueue, {
         batchSize: 5,
+        maxBatchingWindow: cdk.Duration.seconds(5), // wait for messages to accumulate
       })
     );
 
@@ -252,22 +265,29 @@ export class ProductServiceStack extends cdk.Stack {
     });
 
 
-    const createProductTopic = new sns.Topic(this, 'CreateProductTopic', {
-      topicName: 'createProductTopic',
-    });
-
-
+    // Must confirm both emails from AWS
     createProductTopic.addSubscription(
-      // You must confirm the email when AWS sends confirmation
-      new subscriptions.EmailSubscription('yuka.github@gmail.com')
+      new subscriptions.EmailSubscription('yuka.github+create@gmail.com', {
+        filterPolicy: {
+          actionTypeCategory: sns.SubscriptionFilter.stringFilter({
+            allowlist: ['create'],
+          })
+        },
+      })
     );
+
+    // Must confirm both emails from AWS
+    createProductTopic.addSubscription(
+      new subscriptions.EmailSubscription('yuka.github+update@gmail.com', {
+        filterPolicy: {
+          actionTypeCategory: sns.SubscriptionFilter.stringFilter({
+            allowlist: ['update'],
+          }),
+        },
+      })
+    );
+
     createProductTopic.grantPublish(catalogBatchProcess);
     this.catalogItemsQueue.grantConsumeMessages(catalogBatchProcess);
-
-    // Pass topic ARN to Lambda as env variable
-    catalogBatchProcess.addEnvironment(
-      'CREATE_PRODUCT_TOPIC_ARN',
-      createProductTopic.topicArn
-    );
   }
 }

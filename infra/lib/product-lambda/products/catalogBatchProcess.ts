@@ -11,45 +11,66 @@ import { PublishCommand, SNSClient } from '@aws-sdk/client-sns';
 const client = new DynamoDBClient({});
 const snsClient = new SNSClient({});
 
-/**
- *  Query products by title-index
- *  If product exists
- *      UPDATE stocks SET count = count + incomingCount
- *  If product does NOT exist
- *  TRANSACTION
- *      Put product
- *      Put stock
- */
+async function publishToSNS(
+    subject: string,
+    payload: object,
+    actionType: 'create' | 'update'
+) {
+    const topicArn = process.env.CREATE_PRODUCT_TOPIC_ARN;
+    if (!topicArn) throw new Error('CREATE_PRODUCT_TOPIC_ARN is not set');
 
-// Requirements: No scans, Minimal cost, Atomic consistency
+    await snsClient.send(
+        new PublishCommand({
+            TopicArn: topicArn,
+            Subject: subject,
+            Message: JSON.stringify(payload, null, 2),
+            MessageAttributes: {
+                actionTypeCategory: {
+                    DataType: 'String',
+                    StringValue: actionType,
+                },
+            },
+        })
+    );
+}
+
 export const catalogBatchProcess: SQSHandler = async (event) => {
     console.log('SQS Event:', JSON.stringify(event));
 
     const batchItemFailures: { itemIdentifier: string }[] = [];
     const createdProducts: any[] = [];
+    const updatedProductIds: string[] = [];
 
     for (const record of event.Records) {
         try {
             const body = JSON.parse(record.body);
             const { title, description = '' } = body;
 
-            // CSV → everything is string
+            // Skip CSV header (do not retry)
+            if (
+                title === 'title' &&
+                body.price === 'price' &&
+                body.count === 'count'
+            ) {
+                console.warn('CSV header skipped');
+                continue;
+            }
+
             const price = Number(body.price);
             const count = Number(body.count);
 
-
-            // validation
-            if (
-                !body.title ||
-                Number.isNaN(price) ||
-                Number.isNaN(count) ||
-                count <= 0
-            ) {
+            // Validation
+            if (!title || Number.isNaN(price) || Number.isNaN(count) || count <= 0) {
                 console.error('Invalid message:', body);
-                continue; // do NOT crash batch
+
+                // Retry ONLY real invalid data
+                batchItemFailures.push({
+                    itemIdentifier: record.messageId,
+                });
+                continue;
             }
 
-            // 1. Query product by title (GSI)
+            // -------- FIND PRODUCT BY TITLE --------
             const queryResult = await client.send(
                 new QueryCommand({
                     TableName: process.env.PRODUCTS_TABLE!,
@@ -61,11 +82,10 @@ export const catalogBatchProcess: SQSHandler = async (event) => {
                     ExpressionAttributeValues: {
                         ':title': { S: title },
                     },
-                    Limit: 1,
                 })
             );
 
-            // CASE 1: Product exists → update stock
+            // CASE 1: Product exists → UPDATE stock (SAFE ATOMIC)
             if (queryResult.Items && queryResult.Items.length > 0) {
                 const productId = queryResult.Items[0].id.S!;
 
@@ -75,23 +95,22 @@ export const catalogBatchProcess: SQSHandler = async (event) => {
                         Key: {
                             product_id: { S: productId },
                         },
-                        UpdateExpression:
-                            'SET #count = if_not_exists(#count, :zero) + :inc',
+                        // IMPORTANT FIX: use ADD, not SET
+                        UpdateExpression: 'ADD #count :inc',
                         ExpressionAttributeNames: {
                             '#count': 'count',
                         },
                         ExpressionAttributeValues: {
                             ':inc': { N: count.toString() },
-                            ':zero': { N: '0' },
                         },
                     })
                 );
 
-                console.log(`Stock updated for product ${productId}`);
+                updatedProductIds.push(productId);
                 continue;
             }
 
-            // CASE 2: Product does NOT exist → create product + stock
+            // CASE 2: Product does not exist → CREATE (transaction)
             const newProductId = randomUUID();
 
             await client.send(
@@ -121,7 +140,7 @@ export const catalogBatchProcess: SQSHandler = async (event) => {
                     ],
                 })
             );
-            
+
             console.log(`Product created: ${newProductId}`);
             createdProducts.push({
                 id: newProductId,
@@ -130,7 +149,6 @@ export const catalogBatchProcess: SQSHandler = async (event) => {
                 price,
             });
         } catch (error) {
-            // No full batch retry
             console.error('Failed record:', record.messageId, error);
 
             batchItemFailures.push({
@@ -139,29 +157,35 @@ export const catalogBatchProcess: SQSHandler = async (event) => {
         }
     }
 
-    if (createdProducts) {
-        const topicArn = process.env.CREATE_PRODUCT_TOPIC_ARN;
-
-        if (!topicArn) {
-            throw new Error('CREATE_PRODUCT_TOPIC_ARN is not set');
-        }
-        const message = JSON.stringify(
+    // SNS notifications
+    if (createdProducts.length > 0) {
+        await publishToSNS(
+            '[New products created]',
             {
                 message: 'Products were successfully created',
                 products: createdProducts,
             },
-            null,
-            2
+            'create'
         );
-        await snsClient.send(
-            new PublishCommand({
-                TopicArn: topicArn,
-                Subject: 'New products created',
-                Message: message,
-            })
-        );
-        console.error('Publish Topic:', 'New products created', message);
     }
+
+    if (updatedProductIds.length > 0) {
+        await publishToSNS(
+            '[Products updated]',
+            {
+                message: 'Products were successfully updated',
+                products: updatedProductIds,
+            },
+            'update'
+        );
+    }
+
+    console.log('Batch finished', {
+        received: event.Records.length,
+        failed: batchItemFailures.length,
+        created: createdProducts.length,
+        updated: updatedProductIds.length,
+    });
 
     return { batchItemFailures };
 };
