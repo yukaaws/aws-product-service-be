@@ -6,8 +6,17 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import { NodejsFunction } from 'aws-cdk-lib/aws-lambda-nodejs';
+import * as sqs from 'aws-cdk-lib/aws-sqs';
+import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
+import * as iam from 'aws-cdk-lib/aws-iam';
+import * as sns from 'aws-cdk-lib/aws-sns';
+import * as subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
+
 
 export class ProductServiceStack extends cdk.Stack {
+  //  Queue is publicly exposed to other stacks
+  public readonly catalogItemsQueue: sqs.Queue;
+
   constructor(scope: Construct, id: string, props?: cdk.StackProps) {
     super(scope, id, props);
 
@@ -28,6 +37,10 @@ export class ProductServiceStack extends cdk.Stack {
       STOCK_TABLE: stockTable.tableName,
     };
 
+    const createProductTopic = new sns.Topic(this, 'CreateProductTopic', {
+      topicName: 'createProductTopic',
+    });
+
     const getProductsListLambda = new NodejsFunction(
       this,
       'GetProductsListLambda',
@@ -38,6 +51,8 @@ export class ProductServiceStack extends cdk.Stack {
           '../product-lambda/products/getProductsList.ts'
         ),
         handler: 'getProductsList',
+        // less then SQS
+        timeout: cdk.Duration.seconds(30),
         bundling: {
           minify: false,
           sourceMap: true,
@@ -193,5 +208,86 @@ export class ProductServiceStack extends cdk.Stack {
         ],
       }
     );
+
+    // Create SQS queue
+    this.catalogItemsQueue = new sqs.Queue(this, 'CatalogItemsQueue', {
+      queueName: 'catalogItemsQueue',
+      // MUST be greater than Lambda timeout
+      visibilityTimeout: cdk.Duration.seconds(60),
+    });
+
+    // Create catalogBatchProcess Lambda
+    const catalogBatchProcess = new NodejsFunction(this, 'CatalogBatchProcess', {
+      functionName: 'catalogBatchProcess',
+      runtime: lambda.Runtime.NODEJS_20_X,
+      entry: path.join(
+        __dirname,
+        '../product-lambda/products/catalogBatchProcess.ts'
+      ),
+      handler: 'catalogBatchProcess',
+
+      environment: {
+        ...environment,
+        CREATE_PRODUCT_TOPIC_ARN: createProductTopic.topicArn,
+      },
+
+    });
+
+    // Grant DynamoDB access:
+    // Write permissions (required for TransactWriteItems)
+    productsTable.grantWriteData(catalogBatchProcess);
+    stockTable.grantWriteData(catalogBatchProcess);
+
+    // Read/Query permissions for GSI (indexes have separate ARNs)
+    catalogBatchProcess.addToRolePolicy(
+      new iam.PolicyStatement({
+        effect: iam.Effect.ALLOW,
+        actions: [
+          'dynamodb:Query',
+        ],
+        resources: [
+          'arn:aws:dynamodb:us-west-1:332241527431:table/products',
+          'arn:aws:dynamodb:us-west-1:332241527431:table/products/index/*',
+        ],
+      })
+    );
+
+    // Connect SQS to Lambda
+    catalogBatchProcess.addEventSource(
+      new lambdaEventSources.SqsEventSource(this.catalogItemsQueue, {
+        batchSize: 5,
+        maxBatchingWindow: cdk.Duration.seconds(5), // wait for messages to accumulate
+      })
+    );
+
+    new cdk.CfnOutput(this, 'CatalogItemsQueueUrl', {
+      value: this.catalogItemsQueue.queueUrl,
+    });
+
+
+    // Must confirm both emails from AWS
+    createProductTopic.addSubscription(
+      new subscriptions.EmailSubscription('yuka.github+create@gmail.com', {
+        filterPolicy: {
+          actionTypeCategory: sns.SubscriptionFilter.stringFilter({
+            allowlist: ['create'],
+          })
+        },
+      })
+    );
+
+    // Must confirm both emails from AWS
+    createProductTopic.addSubscription(
+      new subscriptions.EmailSubscription('yuka.github+update@gmail.com', {
+        filterPolicy: {
+          actionTypeCategory: sns.SubscriptionFilter.stringFilter({
+            allowlist: ['update'],
+          }),
+        },
+      })
+    );
+
+    createProductTopic.grantPublish(catalogBatchProcess);
+    this.catalogItemsQueue.grantConsumeMessages(catalogBatchProcess);
   }
 }
