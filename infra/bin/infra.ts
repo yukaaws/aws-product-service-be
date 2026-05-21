@@ -2,6 +2,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import { ProductServiceStack } from '../lib/product-stack-be/product-service-stack';
 import { ImportServiceStack } from '../lib/import-stack-be/import-service-stack';
+import { AuthorizerStack } from '../lib/authorization-stack-be/authorization-service-be';
 
 const app = new cdk.App();
 
@@ -12,6 +13,10 @@ const env = {
   account: process.env.CDK_DEFAULT_ACCOUNT,
 };
 
+const authorizerStack = new AuthorizerStack(app, 'AuthorizerStack', {
+  env,
+})
+
 const productStack = new ProductServiceStack(app, 'ProductServiceStack', {
   env,
   /* For more information, see https://docs.aws.amazon.com/cdk/latest/guide/environments.html */
@@ -19,6 +24,7 @@ const productStack = new ProductServiceStack(app, 'ProductServiceStack', {
 
 new ImportServiceStack(app, 'ImportServiceStack', {
   catalogItemsQueue: productStack.catalogItemsQueue,
+  basicAuthorizerLambdaArn: authorizerStack.basicAuthorizerLambdaArn,
   env,
-
 });
+

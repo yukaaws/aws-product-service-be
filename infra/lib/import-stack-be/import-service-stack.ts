@@ -10,16 +10,17 @@ import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as path from 'path';
 import * as sqs from 'aws-cdk-lib/aws-sqs';
 
-
 export interface ImportServiceStackProps extends cdk.StackProps {
     catalogItemsQueue: sqs.IQueue;
+    basicAuthorizerLambdaArn: string;
 }
-
 
 export class ImportServiceStack extends cdk.Stack {
     public readonly importBucket: s3.Bucket;
     constructor(scope: Construct, id: string, props: ImportServiceStackProps) {
         super(scope, id, props);
+
+        const webAppOrigin = 'https://ddk1o2ft55aha.cloudfront.net';
 
         this.importBucket = new s3.Bucket(this, 'ImportServiceBucket', {
             bucketName: `import-service-bucket-${cdk.Aws.ACCOUNT_ID}`,
@@ -51,6 +52,7 @@ export class ImportServiceStack extends cdk.Stack {
             handler: 'handler',
             environment: {
                 IMPORT_BUCKET: this.importBucket.bucketName,
+                ALLOWED_ORIGIN: webAppOrigin,
             },
         });
 
@@ -86,22 +88,69 @@ export class ImportServiceStack extends cdk.Stack {
         const api = new apigateway.RestApi(this, 'ImportApi', {
             restApiName: 'Import Service',
             defaultCorsPreflightOptions: {
-                allowOrigins: apigateway.Cors.ALL_ORIGINS,
-                allowMethods: ['GET'],
+                allowOrigins: [webAppOrigin],
+                allowMethods: ['GET', 'OPTIONS'],
+                allowHeaders: ['Authorization', 'Content-Type'],
+            },
+
+        });
+
+
+        api.addGatewayResponse('Default4XX', {
+            type: apigateway.ResponseType.DEFAULT_4XX,
+            responseHeaders: {
+                'Access-Control-Allow-Origin': `'${webAppOrigin}'`,
+                'Access-Control-Allow-Headers': "'Authorization,Content-Type'",
+                'Access-Control-Allow-Methods': "'GET,OPTIONS'",
             },
         });
 
-        const importResource = api.root.addResource('import');
+        api.addGatewayResponse('Default5XX', {
+            type: apigateway.ResponseType.DEFAULT_5XX,
+            responseHeaders: {
+                'Access-Control-Allow-Origin': `'${webAppOrigin}'`,
+                'Access-Control-Allow-Headers': "'Authorization,Content-Type'",
+                'Access-Control-Allow-Methods': "'GET,OPTIONS'",
+            },
+        });
+
+
+        // Permission added in ImportServiceStack, no loop
+        const basicAuthorizerLambda = lambda.Function.fromFunctionArn(
+            this,
+            'ImportedBasicAuthorizer',
+            props.basicAuthorizerLambdaArn
+        );
+
+        // Used TokenAuthorizer because your basicAuthorizer uses the Authorization header as a token
+        const basicAuthorizer = new apigateway.TokenAuthorizer(this, 'BasicAuthorizer', {
+            handler: basicAuthorizerLambda,
+            identitySource: apigateway.IdentitySource.header('Authorization'),
+            resultsCacheTtl: cdk.Duration.seconds(0),
+        });
+
+        const importResource = api.root.addResource('import', {
+            defaultCorsPreflightOptions: {
+                allowOrigins: [
+                   webAppOrigin,
+                ],
+                allowMethods: ['GET', 'OPTIONS'],
+                allowHeaders: ['Authorization', 'Content-Type'],
+            }
+        });
         importResource.addMethod(
             'GET',
-            new apigateway.LambdaIntegration(importProductsFile)
+            new apigateway.LambdaIntegration(importProductsFile),
+            {
+                authorizationType: apigateway.AuthorizationType.CUSTOM,
+                authorizer: basicAuthorizer,
+            }
         );
 
         /** Output */
         new cdk.CfnOutput(this, 'ImportApiUrl', {
             value: api.url,
         });
-
 
     }
 }

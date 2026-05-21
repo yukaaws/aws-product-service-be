@@ -1,5 +1,3 @@
-import { APIGatewayProxyHandler } from 'aws-lambda';
-
 import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
 import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 
@@ -28,12 +26,13 @@ export const handler = async (event: { queryStringParameters: { name: any; }; })
             expiresIn: 60,
         });
 
-
         return {
             statusCode: 200,
             headers: {
-                'Access-Control-Allow-Origin': '*',
+                'Access-Control-Allow-Origin': process.env.ALLOWED_ORIGIN!,
+                'Access-Control-Allow-Credentials': 'true',
             },
+
             body: JSON.stringify({ url: signedUrl }),
         };
     } catch (error) {
