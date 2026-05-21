@@ -12,9 +12,7 @@ export const basicAuthorizer = async (
   // 401 — no Authorization header
   if (!token) {
     console.error('No tocken');
-    // ! DO NOT THROW
-    return generatePolicy('user', 'Deny', event.methodArn);
-    // throw new Error('Unauthorized');
+    throw new Error('Unauthorized');
   }
 
     // Expected: "Basic base64(login:password)"
